@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTML → Self-Executing QR</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:900px;margin:auto;padding:24px;line-height:1.45}
+.card{border:1px solid #ccc;border-radius:10px;padding:16px;margin:16px 0}
+#qr{display:flex;justify-content:center;margin:20px 0}
+button{padding:10px 16px;margin:5px 5px 5px 0;cursor:pointer}
+#status{white-space:pre-wrap}
+small{color:#555}
+</style>
+</head>
+<body>
+<h1>HTML → Self-Executing QR</h1>
+<p>Select an HTML file to compress it and put it inside a QR code.</p>
+
+<div class="card">
+  <input id="file" type="file" accept=".html,.htm,text/html">
+  <div id="status">No file selected.</div>
+</div>
+
+<div id="qr"></div>
+<button id="download" disabled>Download QR PNG</button>
+<button id="copy" disabled>Copy QR URL</button>
+<div id="details"></div>
+
+<!-- These libraries are only used by this generator. -->
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+<script>
+const fileInput = document.getElementById("file");
+const qrBox = document.getElementById("qr");
+const status = document.getElementById("status");
+const details = document.getElementById("details");
+const download = document.getElementById("download");
+const copy = document.getElementById("copy");
+
+let currentURL = "";
+let currentCanvas = null;
+
+function bytesToBase64URL(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(i, i + chunkSize)
+    );
+  }
+
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  qrBox.innerHTML = "";
+  details.innerHTML = "";
+  download.disabled = true;
+  copy.disabled = true;
+  status.textContent = "Reading and compressing...";
+
+  try {
+    if (typeof pako === "undefined") {
+      throw new Error(
+        "The compression library failed to load. Make sure you are connected to the internet."
+      );
+    }
+
+    if (typeof QRCode === "undefined") {
+      throw new Error(
+        "The QR-code library failed to load. Make sure you are connected to the internet."
+      );
+    }
+
+    const html = await file.text();
+    const raw = new TextEncoder().encode(html);
+    const compressed = pako.gzip(raw, { level: 9 });
+    const payload = bytesToBase64URL(compressed);
+
+    /*
+      The generated QR contains a data:text/html URL.
+
+      The compressed HTML is stored in the URL fragment (#...).
+      The tiny HTML bootstrap code before the # decompresses it
+      and replaces itself with the original page.
+    */
+    const bootstrap = `<!doctype html>
+<meta charset="utf-8">
+<script>
+(async()=>{
+  try {
+    const b64=location.hash.slice(1)
+      .replace(/-/g,"+")
+      .replace(/_/g,"/");
+    const binary=atob(b64);
+    const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
+
+    const stream=new Blob([bytes])
+      .stream()
+      .pipeThrough(new DecompressionStream("gzip"));
+
+    const html=new TextDecoder().decode(
+      await new Response(stream).arrayBuffer()
+    );
+
+    document.open();
+    document.write(html);
+    document.close();
+  } catch(e) {
+    document.body.textContent="Could not reconstruct page: "+e;
+  }
+})();
+<\/script>`;
+
+    currentURL =
+      "data:text/html;charset=utf-8," +
+      encodeURIComponent(bootstrap) +
+      "#" +
+      payload;
+
+    /*
+      qrcodejs automatically chooses the QR version needed for the
+      supplied string. We use error correction L to maximize capacity.
+    */
+    new QRCode(qrBox, {
+      text: currentURL,
+      width: 800,
+      height: 800,
+      correctLevel: QRCode.CorrectLevel.L
+    });
+
+    // qrcodejs creates a canvas on most browsers, but can create an img.
+    // Wait briefly so the generated element exists.
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    currentCanvas = qrBox.querySelector("canvas");
+
+    status.textContent = "QR code generated.";
+
+    details.innerHTML =
+      "<p><b>Original:</b> " +
+      raw.length.toLocaleString() +
+      " bytes (" + (raw.length / 1024).toFixed(2) + " KB)<br>" +
+      "<b>Gzip:</b> " +
+      compressed.length.toLocaleString() +
+      " bytes (" + (compressed.length / 1024).toFixed(2) + " KB)<br>" +
+      "<b>QR data URL:</b> " +
+      currentURL.length.toLocaleString() +
+      " characters (" + (currentURL.length / 1024).toFixed(2) + " KB)</p>" +
+      "<small>For a single QR, smaller files are much more reliable. " +
+      "Large HTML/JavaScript files may exceed QR capacity.</small>";
+
+    download.disabled = false;
+    copy.disabled = false;
+
+  } catch (error) {
+    status.textContent = "Error: " + error.message;
+  }
+});
+
+download.addEventListener("click", () => {
+  if (!currentCanvas) {
+    // qrcodejs may have produced an image instead of a canvas.
+    const img = qrBox.querySelector("img");
+    if (img) {
+      const a = document.createElement("a");
+      a.download = "html-qr.png";
+      a.href = img.src;
+      a.click();
+    }
+    return;
+  }
+
+  const a = document.createElement("a");
+  a.download = "html-qr.png";
+  a.href = currentCanvas.toDataURL("image/png");
+  a.click();
+});
+
+copy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(currentURL);
+    copy.textContent = "Copied!";
+    setTimeout(() => copy.textContent = "Copy QR URL", 1200);
+  } catch {
+    alert("Could not copy automatically. Your browser may block clipboard access.");
+  }
+});
+</script>
+</body>
+</html>
