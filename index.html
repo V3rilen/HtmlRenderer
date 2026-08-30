@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML QR Generator</title>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: auto;
+      padding: 24px;
+      line-height: 1.45;
+    }
+
+    .card {
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      padding: 16px;
+      margin: 16px 0;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      margin: 10px 0;
+    }
+
+    #qr {
+      display: flex;
+      justify-content: center;
+      margin: 20px 0;
+    }
+
+    button {
+      padding: 10px 16px;
+      margin: 5px 5px 5px 0;
+      cursor: pointer;
+    }
+
+    #status {
+      white-space: pre-wrap;
+    }
+
+    code {
+      word-break: break-all;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+
+</head>
+
+<body>
+
+<div id="generator">
+
+  <h1>HTML → QR Code</h1>
+
+  <p>
+    Select an HTML file and this page will compress it and create a URL
+    containing the compressed HTML.
+  </p>
+
+  <div class="card">
+
+```
+<h3>Select HTML file</h3>
+
+<input
+  id="file"
+  type="file"
+  accept=".html,.htm,text/html"
+>
+
+<div id="status">
+  No file selected.
+</div>
+```
+
+  </div>
+
+  <div id="qr"></div>
+
+  <button id="download" disabled>
+    Download QR PNG
+  </button>
+
+  <button id="copy" disabled>
+    Copy URL
+  </button>
+
+  <div id="details"></div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+<script>
+
+////////////////////////////////////////////////////////////
+// LOADER
+////////////////////////////////////////////////////////////
+
+async function loadEmbeddedHTML() {
+
+  const payload = window.location.hash.substring(1);
+
+  if (!payload) {
+    return false;
+  }
+
+  try {
+
+    document.body.innerHTML = `
+      <p style="font-family:system-ui;text-align:center;padding:40px">
+        Loading embedded webpage...
+      </p>
+    `;
+
+    /*
+     * Convert URL-safe Base64 back into normal Base64.
+     */
+
+    let base64 = payload
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+
+    while (base64.length % 4 !== 0) {
+      base64 += "=";
+    }
+
+
+    /*
+     * Decode Base64.
+     */
+
+    const binary = atob(base64);
+
+    const compressed = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i++) {
+      compressed[i] = binary.charCodeAt(i);
+    }
+
+
+    /*
+     * Decompress gzip.
+     */
+
+    const stream = new Blob([compressed])
+      .stream()
+      .pipeThrough(
+        new DecompressionStream("gzip")
+      );
+
+
+    const buffer =
+      await new Response(stream).arrayBuffer();
+
+
+    /*
+     * Convert bytes back into HTML.
+     */
+
+    const html =
+      new TextDecoder().decode(buffer);
+
+
+    /*
+     * Replace this page with the original page.
+     */
+
+    document.open();
+
+    document.write(html);
+
+    document.close();
+
+
+    return true;
+
+  } catch (error) {
+
+    document.body.innerHTML = `
+      <div style="
+        font-family:system-ui;
+        max-width:700px;
+        margin:auto;
+        padding:40px;
+      ">
+
+        <h1>Could not load webpage</h1>
+
+        <p>
+          The QR payload could not be reconstructed.
+        </p>
+
+        <pre>${escapeHTML(error.message)}</pre>
+
+```
+  </div>
+`;
+
+return true;
+```
+
+}
+}
+
+////////////////////////////////////////////////////////////
+// GENERATOR
+////////////////////////////////////////////////////////////
+
+const fileInput =
+document.getElementById("file");
+
+const qrBox =
+document.getElementById("qr");
+
+const status =
+document.getElementById("status");
+
+const details =
+document.getElementById("details");
+
+const download =
+document.getElementById("download");
+
+const copy =
+document.getElementById("copy");
+
+let currentURL = "";
+
+let currentCanvas = null;
+
+////////////////////////////////////////////////////////////
+// BYTE → URL SAFE BASE64
+////////////////////////////////////////////////////////////
+
+function bytesToBase64URL(bytes) {
+
+let binary = "";
+
+const chunkSize = 0x8000;
+
+for (
+let i = 0;
+i < bytes.length;
+i += chunkSize
+) {
+
+```
+binary += String.fromCharCode(
+  ...bytes.subarray(
+    i,
+    i + chunkSize
+  )
+);
+```
+
+}
+
+return btoa(binary)
+.replace(/+/g, "-")
+.replace(///g, "_")
+.replace(/=+$/, "");
+
+}
+
+////////////////////////////////////////////////////////////
+// GENERATE
+////////////////////////////////////////////////////////////
+
+fileInput.addEventListener(
+"change",
+async function () {
+
+```
+const file =
+  fileInput.files[0];
+
+if (!file) {
+  return;
+}
+
+
+qrBox.innerHTML = "";
+
+details.innerHTML = "";
+
+download.disabled = true;
+
+copy.disabled = true;
+
+
+try {
+
+  if (typeof pako === "undefined") {
+
+    throw new Error(
+      "Compression library failed to load."
+    );
+
+  }
+
+
+  if (typeof QRCode === "undefined") {
+
+    throw new Error(
+      "QR-code library failed to load."
+    );
+
+  }
+
+
+  status.textContent =
+    "Reading and compressing...";
+
+
+  /*
+   * Read the HTML file.
+   */
+
+  const html =
+    await file.text();
+
+
+  /*
+   * Convert HTML to UTF-8 bytes.
+   */
+
+  const raw =
+    new TextEncoder().encode(html);
+
+
+  /*
+   * Compress it using gzip.
+   */
+
+  const compressed =
+    pako.gzip(
+      raw,
+      {
+        level: 9
+      }
+    );
+
+
+  /*
+   * Convert compressed bytes
+   * into URL-safe Base64.
+   */
+
+  const payload =
+    bytesToBase64URL(
+      compressed
+    );
+
+
+  /*
+   * Get the URL of THIS page.
+   *
+   * Example:
+   *
+   * https://example.com/index.html
+   *
+   * becomes:
+   *
+   * https://example.com/index.html#PAYLOAD
+   */
+
+  const baseURL =
+    window.location.href
+      .split("#")[0];
+
+
+  currentURL =
+    baseURL +
+    "#" +
+    payload;
+
+
+  //////////////////////////////////////////////////////
+  // CREATE QR
+  //////////////////////////////////////////////////////
+
+  new QRCode(
+    qrBox,
+    {
+      text: currentURL,
+
+      width: 800,
+
+      height: 800,
+
+      correctLevel:
+        QRCode.CorrectLevel.L
+    }
+  );
+
+
+  await new Promise(
+    resolve =>
+      setTimeout(resolve, 100)
+  );
+
+
+  currentCanvas =
+    qrBox.querySelector(
+      "canvas"
+    );
+
+
+  status.textContent =
+    "QR code generated.";
+
+
+  details.innerHTML = `
+
+    <p>
+
+      <b>Original HTML:</b>
+      ${raw.length.toLocaleString()}
+      bytes
+      (${(raw.length / 1024).toFixed(2)} KB)
+
+      <br>
+
+      <b>Compressed:</b>
+      ${compressed.length.toLocaleString()}
+      bytes
+      (${(compressed.length / 1024).toFixed(2)} KB)
+
+      <br>
+
+      <b>URL:</b>
+      ${currentURL.length.toLocaleString()}
+      characters
+      (${(currentURL.length / 1024).toFixed(2)} KB)
+
+    </p>
+
+    <p>
+      <b>Generated URL:</b>
+    </p>
+
+    <code>
+      ${escapeHTML(currentURL)}
+    </code>
+
+  `;
+
+
+  download.disabled = false;
+
+  copy.disabled = false;
+
+
+} catch (error) {
+
+  status.textContent =
+    "Error: " +
+    error.message;
+
+}
+```
+
+}
+);
+
+////////////////////////////////////////////////////////////
+// DOWNLOAD QR
+////////////////////////////////////////////////////////////
+
+download.addEventListener(
+"click",
+function () {
+
+```
+if (currentCanvas) {
+
+  const link =
+    document.createElement("a");
+
+  link.download =
+    "html-qr.png";
+
+  link.href =
+    currentCanvas.toDataURL(
+      "image/png"
+    );
+
+  link.click();
+
+  return;
+
+}
+
+
+const image =
+  qrBox.querySelector("img");
+
+if (image) {
+
+  const link =
+    document.createElement("a");
+
+  link.download =
+    "html-qr.png";
+
+  link.href =
+    image.src;
+
+  link.click();
+
+}
+```
+
+}
+);
+
+////////////////////////////////////////////////////////////
+// COPY URL
+////////////////////////////////////////////////////////////
+
+copy.addEventListener(
+"click",
+async function () {
+
+```
+try {
+
+  await navigator.clipboard
+    .writeText(currentURL);
+
+  copy.textContent =
+    "Copied!";
+
+  setTimeout(
+    () => {
+      copy.textContent =
+        "Copy URL";
+    },
+    1200
+  );
+
+} catch {
+
+  alert(
+    "Could not copy URL."
+  );
+
+}
+```
+
+}
+);
+
+////////////////////////////////////////////////////////////
+// ESCAPE HTML FOR ERROR MESSAGES
+////////////////////////////////////////////////////////////
+
+function escapeHTML(text) {
+
+return text
+.replace(/&/g, "&")
+.replace(/</g, "<")
+.replace(/>/g, ">")
+.replace(/"/g, """)
+.replace(/'/g, "'");
+
+}
+
+////////////////////////////////////////////////////////////
+// DECIDE WHETHER THIS IS A LOADER OR GENERATOR
+////////////////////////////////////////////////////////////
+
+loadEmbeddedHTML();
+
+</script>
+
+</body>
+</html>
